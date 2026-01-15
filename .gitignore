@@ -1,0 +1,34 @@
+# Dependencias
+node_modules/
+
+# Salida de build
+dist/
+
+# Cachés de bundlers / herramientas
+.vite/
+.next/
+.cache/
+.eslintcache
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Entornos
+.env
+.env.*
+!.env.example
+
+# SO / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Test coverage
+coverage/
+
+# Caddy (si generara artefactos locales)
+caddy_data/
+caddy_config/
