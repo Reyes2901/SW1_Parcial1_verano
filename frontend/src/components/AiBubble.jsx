@@ -257,6 +257,52 @@ export default function AiBubble({ boardId, nodes, edges, setNodes, setEdges, up
         };
       });
 
+      // === DISTRIBUCIÓN DE HANDLES ===
+      // Trackear handles ocupados por nodo: { nodeId: Set de handles usados }
+      const usedHandles = {};
+      
+      // Constantes de handles por lado
+      const SIDES = {
+        right: ['right-top', 'right-center', 'right-bottom'],
+        left: ['left-top', 'left-center', 'left-bottom'],
+        top: ['top-center'],
+        bottom: ['bottom-center']
+      };
+      // Orden de búsqueda: primero el lado ideal, luego los adyacentes, luego el opuesto
+      const SIDE_PRIORITY = {
+        right: ['right', 'top', 'bottom', 'left'],
+        left: ['left', 'top', 'bottom', 'right'],
+        top: ['top', 'right', 'left', 'bottom'],
+        bottom: ['bottom', 'right', 'left', 'top']
+      };
+      const OPPOSITE_SIDE = { right: 'left', left: 'right', top: 'bottom', bottom: 'top' };
+      
+      // Obtener el próximo handle libre, buscando en orden de prioridad
+      const getNextFreeHandle = (nodeId, preferredSide) => {
+        if (!usedHandles[nodeId]) usedHandles[nodeId] = new Set();
+        const used = usedHandles[nodeId];
+        const sidesToTry = SIDE_PRIORITY[preferredSide] || ['right', 'left', 'top', 'bottom'];
+        
+        for (const side of sidesToTry) {
+          const handles = SIDES[side];
+          for (const h of handles) {
+            if (!used.has(h)) {
+              used.add(h);
+              return h;
+            }
+          }
+        }
+        return SIDES[preferredSide]?.[0] || 'right-center';
+      };
+      
+      // Calcular qué lado usar basado en posición geométrica
+      const getClosestSide = (srcNode, tgtNode) => {
+        const dx = tgtNode.position.x - srcNode.position.x;
+        const dy = tgtNode.position.y - srcNode.position.y;
+        if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+        return dy > 0 ? 'bottom' : 'top';
+      };
+
       // Build edges, resolving source/target by id or by matching names to elements
       const newEdges = rels.map((rel, i) => {
         const id = rel && rel.id ? String(rel.id) : `ai_rel_${Date.now()}_${Math.random().toString(36).slice(2,8)}_${i}`;
@@ -283,10 +329,25 @@ export default function AiBubble({ boardId, nodes, edges, setNodes, setEdges, up
         const cardinality = rel && (rel.cardinality || rel.card) ? rel.cardinality || rel.card : null;
         const cardinalityData = parseCardinality(cardinality);
 
+        // Asignar handles distribuidos
+        const srcNode = newNodes.find(n => n.id === source);
+        const tgtNode = newNodes.find(n => n.id === target);
+        let sourceHandle = 'right-center';
+        let targetHandle = 'left-center';
+        
+        if (srcNode && tgtNode) {
+          const srcSide = getClosestSide(srcNode, tgtNode);
+          const tgtSide = OPPOSITE_SIDE[srcSide];
+          sourceHandle = getNextFreeHandle(source, srcSide);
+          targetHandle = getNextFreeHandle(target, tgtSide);
+        }
+
         return {
           id,
           source,
           target,
+          sourceHandle,
+          targetHandle,
           type: 'umlEdge',
           data: {
             type: (rel && (rel.type || rel.relation)) || 'association',
@@ -430,7 +491,58 @@ export default function AiBubble({ boardId, nodes, edges, setNodes, setEdges, up
         
         // Apply changes to local state immediately with protection
         const newNodes = res.newState.nodes || [];
-        const newEdges = res.newState.edges || [];
+        let newEdges = res.newState.edges || [];
+        
+        // === DISTRIBUCIÓN DE HANDLES PARA MODIFICACIONES ===
+        // Constantes locales para distribución de handles
+        const SIDES_MOD = {
+          right: ['right-top', 'right-center', 'right-bottom'],
+          left: ['left-top', 'left-center', 'left-bottom'],
+          top: ['top-center'],
+          bottom: ['bottom-center']
+        };
+        const SIDE_PRIORITY_MOD = {
+          right: ['right', 'top', 'bottom', 'left'],
+          left: ['left', 'top', 'bottom', 'right'],
+          top: ['top', 'right', 'left', 'bottom'],
+          bottom: ['bottom', 'right', 'left', 'top']
+        };
+        const OPPOSITE_SIDE_MOD = { right: 'left', left: 'right', top: 'bottom', bottom: 'top' };
+        
+        const usedHandlesMod = {};
+        
+        // Función para calcular el lado más cercano entre dos nodos
+        const getClosestSideMod = (srcNode, tgtNode) => {
+          const dx = (tgtNode.position?.x || 0) - (srcNode.position?.x || 0);
+          const dy = (tgtNode.position?.y || 0) - (srcNode.position?.y || 0);
+          if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+          return dy > 0 ? 'bottom' : 'top';
+        };
+        
+        const getNextFreeHandleMod = (nodeId, preferredSide) => {
+          if (!usedHandlesMod[nodeId]) usedHandlesMod[nodeId] = new Set();
+          const used = usedHandlesMod[nodeId];
+          const sidesToTry = SIDE_PRIORITY_MOD[preferredSide] || ['right', 'left', 'top', 'bottom'];
+          for (const side of sidesToTry) {
+            for (const h of SIDES_MOD[side]) {
+              if (!used.has(h)) { used.add(h); return h; }
+            }
+          }
+          return SIDES_MOD[preferredSide]?.[0] || 'right-center';
+        };
+        
+        newEdges = newEdges.map(e => {
+          if (e.sourceHandle && e.targetHandle) return e;
+          const srcNode = newNodes.find(n => n.id === e.source);
+          const tgtNode = newNodes.find(n => n.id === e.target);
+          let sourceHandle = 'right-center', targetHandle = 'left-center';
+          if (srcNode && tgtNode) {
+            const srcSide = getClosestSideMod(srcNode, tgtNode);
+            sourceHandle = getNextFreeHandleMod(e.source, srcSide);
+            targetHandle = getNextFreeHandleMod(e.target, OPPOSITE_SIDE_MOD[srcSide]);
+          }
+          return { ...e, sourceHandle, targetHandle };
+        });
         
         // Apply changes multiple times to ensure they stick
         const applyChanges = () => {
