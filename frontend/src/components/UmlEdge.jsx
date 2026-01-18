@@ -205,27 +205,44 @@ const UmlEdge = ({
     if (data?.hasAssociationClass) {
       if (!window.__acCoordinates) window.__acCoordinates = {};
       
-      // Detectar si las coordenadas han cambiado
-      const prevCoords = window.__acCoordinates[id];
-      const coordsChanged = !prevCoords || 
-        Math.abs(prevCoords.acX - labelX) > 0.1 || 
-        Math.abs(prevCoords.acY - labelY) > 0.1;
-      
       window.__acCoordinates[id] = {
         acX: labelX,
         acY: labelY,
         timestamp: Date.now(),
-        version: (prevCoords?.version || 0) + (coordsChanged ? 1 : 0)
+        version: (window.__acCoordinates[id]?.version || 0)
       };
-      
-      // Forzar invalidación de líneas punteadas cuando las coordenadas cambian
-      if (coordsChanged && window.__forceAssocLineUpdate) {
-        window.__forceAssocLineUpdate(id);
-      }
-      
-
+      // Nota: La actualización de coordenadas se maneja en el useEffect abajo
     }
   }
+  
+  // 🔄 useEffect para forzar re-render de líneas punteadas cuando las coordenadas cambian
+  // Esto evita el error "Cannot update a component while rendering a different component"
+  React.useEffect(() => {
+    if (data?.hasAssociationClass && window.__acCoordinates?.[id]) {
+      const coords = window.__acCoordinates[id];
+      const prevVersion = coords.version || 0;
+      
+      // Detectar si las coordenadas han cambiado significativamente
+      const coordsChanged = !coords._lastLabelX || 
+        Math.abs((coords._lastLabelX || 0) - labelX) > 0.1 || 
+        Math.abs((coords._lastLabelY || 0) - labelY) > 0.1;
+      
+      if (coordsChanged) {
+        // Actualizar versión y coordenadas anteriores
+        window.__acCoordinates[id] = {
+          ...coords,
+          _lastLabelX: labelX,
+          _lastLabelY: labelY,
+          version: prevVersion + 1
+        };
+        
+        // Forzar actualización de líneas punteadas (ahora en useEffect, no durante render)
+        if (window.__forceAssocLineUpdate) {
+          window.__forceAssocLineUpdate(id);
+        }
+      }
+    }
+  }, [id, labelX, labelY, data?.hasAssociationClass]);
   
   // Resolve relationship type case-insensitively and default to Association
   const requestedRel = data.type || data.relation || 'Association';

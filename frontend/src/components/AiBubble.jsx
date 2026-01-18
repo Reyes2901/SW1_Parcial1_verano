@@ -1,6 +1,51 @@
 import { useState, useRef, useEffect } from 'react';
 import { generateDiagram, modifyDiagram } from '../utils/aiService';
 
+// Normalizar tipo de relación UML a formato estándar
+const normalizeRelationshipType = (type) => {
+  if (!type || typeof type !== 'string') return 'Association';
+  
+  const normalized = type.toLowerCase().trim();
+  
+  // Mapa de sinónimos a tipos estándar
+  const typeMap = {
+    // Tipos estándar
+    'association': 'Association',
+    'aggregation': 'Aggregation',
+    'composition': 'Composition',
+    'generalization': 'Generalization',
+    'implementation': 'Implementation',
+    'dependency': 'Dependency',
+    
+    // Sinónimos en español
+    'asociación': 'Association',
+    'asociacion': 'Association',
+    'agregación': 'Aggregation',
+    'agregacion': 'Aggregation',
+    'composición': 'Composition',
+    'composicion': 'Composition',
+    'generalización': 'Generalization',
+    'generalizacion': 'Generalization',
+    'implementación': 'Implementation',
+    'implementacion': 'Implementation',
+    'dependencia': 'Dependency',
+    
+    // Sinónimos comunes
+    'herencia': 'Generalization',
+    'inheritance': 'Generalization',
+    'extends': 'Generalization',
+    'implements': 'Implementation',
+    'uses': 'Dependency',
+    'usa': 'Dependency',
+    'depende': 'Dependency',
+    'compone': 'Composition',
+    'contiene': 'Aggregation',
+    'tiene': 'Association'
+  };
+  
+  return typeMap[normalized] || 'Association';
+};
+
 // Parse cardinality string and extract startLabel and endLabel
 const parseCardinality = (cardinality) => {
   if (!cardinality || typeof cardinality !== 'string') {
@@ -350,7 +395,7 @@ export default function AiBubble({ boardId, nodes, edges, setNodes, setEdges, up
           targetHandle,
           type: 'umlEdge',
           data: {
-            type: (rel && (rel.type || rel.relation)) || 'association',
+            type: normalizeRelationshipType(rel && (rel.type || rel.relation)),
             cardinality,
             startLabel: cardinalityData.startLabel,
             endLabel: cardinalityData.endLabel,

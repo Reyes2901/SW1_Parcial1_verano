@@ -266,21 +266,22 @@ export const useSocketFlow = (boardId, currentUser = null, options = {}) => {
           const first = elemento[0];
           if (!first) return;
           if (first.position) {
-            // replace/merge nodes: merge by id
-            setNodes(prev => {
-              const byId = new Map(prev.map(n => [n.id, n]));
-              elemento.forEach(n => byId.set(n.id, { ...(byId.get(n.id) || {}), ...n }));
-              const result = Array.from(byId.values());
-              return result;
-            });
+            // ═══════════════════════════════════════════════════════════════════
+            // SYNC COMPLETO: Reemplazar nodos con el array recibido
+            // Esto maneja tanto adiciones como eliminaciones correctamente
+            // ═══════════════════════════════════════════════════════════════════
+            setNodes(elemento);
           } else if (first.source && first.target) {
-            // merge incoming edges with local set
+            // ═══════════════════════════════════════════════════════════════════
+            // SYNC COMPLETO DE EDGES: Reemplazar edges con el array recibido
+            // Esto asegura que las eliminaciones se sincronicen correctamente
+            // ═══════════════════════════════════════════════════════════════════
             setEdges(prev => {
-              const byId = new Map(prev.map(e => [e.id, e]));
-              elemento.forEach(e => byId.set(e.id, { ...(byId.get(e.id) || {}), ...e }));
-              const merged = Array.from(byId.values());
-              const incomingIds = new Set(elemento.map(e => e.id));
-              const deduped = dedupeEdgesByEndpoints(merged, incomingIds);
+              // Preservar edges locales que fueron creados recientemente y aún no confirmados
+              const localOnlyEdges = prev.filter(e => e._localCreated && !elemento.some(inc => inc.id === e.id));
+              
+              // Combinar: edges remotos + edges locales pendientes
+              const deduped = dedupeEdgesByEndpoints([...elemento, ...localOnlyEdges], new Set(elemento.map(e => e.id)));
               return deduped;
             });
           }
@@ -504,7 +505,30 @@ export const useSocketFlow = (boardId, currentUser = null, options = {}) => {
 
   const onEdgesChange = useCallback(async (changes) => {
     try {
-      const updated = applyEdgeChanges(changes, edges);
+      // Aplicar cambios
+      let updated = applyEdgeChanges(changes, edges);
+      
+      // ═══════════════════════════════════════════════════════════════════
+      // VALIDACIÓN: No permitir múltiples relaciones entre el mismo par de clases
+      // Filtrar edges duplicados (mismo source-target en cualquier dirección)
+      // ═══════════════════════════════════════════════════════════════════
+      const seenPairs = new Set();
+      updated = updated.filter(edge => {
+        // Ignorar notas
+        if (edge.data?.isNote || edge.data?.isNoteConnection || edge.data?.type === 'NoteConnection') {
+          return true;
+        }
+        // Crear key normalizada (ordenada alfabéticamente para ignorar dirección)
+        const pair = [edge.source, edge.target].sort().join('::');
+        if (seenPairs.has(pair)) {
+          console.warn(`⚠️ Edge duplicado filtrado: ${edge.source} <-> ${edge.target}`);
+          return false; // Filtrar duplicado
+        }
+        seenPairs.add(pair);
+        return true;
+      });
+      // ═══════════════════════════════════════════════════════════════════
+      
       setEdges(updated);
       // Emit full updated edges array so other clients can update immediately
       emitSafe('cambioInstantaneo', { salaId: boardRef.current, usuario: getUsuarioPayload(), tipo: 'edges', elemento: updated });

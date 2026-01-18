@@ -823,9 +823,32 @@ RESULTADO ESPERADO: Estado modificado basado en el estado actual, NO un diagrama
                 }
             }));
 
+            // ═══════════════════════════════════════════════════════════════════════════
+            // DETECCIÓN AUTOMÁTICA DE RELACIONES MUCHOS A MUCHOS (*:*)
+            // Si la IA genera una relación con cardinalidad *:*, *..*:*..*  etc.
+            // automáticamente creamos una clase de asociación
+            // ═══════════════════════════════════════════════════════════════════════════
+            const isManyToMany = (cardinality) => {
+                if (!cardinality) return false;
+                const cleaned = cardinality.replace(/\s+/g, '').toLowerCase();
+                // Patrones que indican muchos a muchos
+                const manyPatterns = [
+                    /^\*:\*$/,           // *:*
+                    /^n:n$/i,            // n:n
+                    /^m:n$/i,            // m:n
+                    /^\*\.\.\*:\*\.\.\*$/,  // *..*:*..*
+                    /^0\.\.\*:0\.\.\*$/,    // 0..*:0..*
+                    /^1\.\.\*:1\.\.\*$/,    // 1..*:1..*
+                    /^0\.\.\*:\*$/,         // 0..*:*
+                    /^\*:0\.\.\*$/,         // *:0..*
+                ];
+                return manyPatterns.some(p => p.test(cleaned));
+            };
+
             // Procesar relaciones con cardinalidades
             const resultEdges = [];
             const existingNodeIds = new Set(resultNodes.map(n => n.id));
+            const additionalNodes = []; // Clases de asociación creadas automáticamente
 
             for (const relationship of validatedResponse.relationships) {
                 let sourceId = relationship.sourceId;
@@ -847,8 +870,78 @@ RESULTADO ESPERADO: Estado modificado basado en el estado actual, NO un diagrama
                 }
 
                 if (existingNodeIds.has(sourceId) && existingNodeIds.has(targetId)) {
-                    // Procesar cardinalidad
+                    // VERIFICAR SI ES RELACIÓN MUCHOS A MUCHOS
+                    if (isManyToMany(relationship.cardinality)) {
+                        console.log(`🔗 Detectada relación *:* entre ${sourceId} y ${targetId}, creando clase de asociación...`);
+                        
+                        // Encontrar nodos source y target para calcular posición
+                        const sourceNode = resultNodes.find(n => n.id === sourceId);
+                        const targetNode = resultNodes.find(n => n.id === targetId);
+                        
+                        // Generar nombre para clase de asociación
+                        const sourceName = sourceNode?.data?.className || sourceId;
+                        const targetName = targetNode?.data?.className || targetId;
+                        const assocClassName = AIEditorController.generateAssociationClassName(sourceName, targetName);
+                        const assocId = `assoc_${sourceId}_${targetId}_${Date.now()}`;
+                        
+                        // Calcular posición en punto medio
+                        const midX = ((sourceNode?.position?.x || 200) + (targetNode?.position?.x || 400)) / 2;
+                        const midY = ((sourceNode?.position?.y || 200) + (targetNode?.position?.y || 200)) / 2;
+                        
+                        // Crear clase de asociación
+                        const assocNode = {
+                            id: assocId,
+                            type: 'classNode',
+                            position: { x: midX, y: midY + 100 }, // Ligeramente abajo del punto medio
+                            data: {
+                                className: assocClassName,
+                                attributes: ['id: string', 'fechaCreacion: Date'],
+                                methods: [],
+                                _aiModified: true,
+                                _isAssociationClass: true
+                            }
+                        };
+                        additionalNodes.push(assocNode);
+                        existingNodeIds.add(assocId);
+                        
+                        // Crear dos relaciones: source -> assoc y assoc -> target
+                        resultEdges.push({
+                            id: `edge_${sourceId}_${assocId}_${Date.now()}`,
+                            source: sourceId,
+                            target: assocId,
+                            type: 'umlEdge',
+                            data: {
+                                type: 'Association',
+                                cardinality: '1:*',
+                                startLabel: '1',
+                                endLabel: '*',
+                                _aiModified: true
+                            }
+                        });
+                        
+                        resultEdges.push({
+                            id: `edge_${assocId}_${targetId}_${Date.now() + 1}`,
+                            source: assocId,
+                            target: targetId,
+                            type: 'umlEdge',
+                            data: {
+                                type: 'Association',
+                                cardinality: '*:1',
+                                startLabel: '*',
+                                endLabel: '1',
+                                _aiModified: true
+                            }
+                        });
+                        
+                        console.log(`✅ Clase de asociación "${assocClassName}" creada con ID: ${assocId}`);
+                        continue; // No crear el edge directo
+                    }
+                    
+                    // Procesar cardinalidad normal
                     const cardinalityData = AIEditorController.parseCardinality(relationship.cardinality);
+                    
+                    // Normalizar el tipo de relación usando la función helper
+                    const normalizedType = AIEditorController.normalizeRelationshipType(relationship.type);
                     
                     resultEdges.push({
                         id: relationship.id || `edge_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -856,7 +949,7 @@ RESULTADO ESPERADO: Estado modificado basado en el estado actual, NO un diagrama
                         target: targetId,
                         type: 'umlEdge',
                         data: {
-                            type: relationship.type || 'Association',
+                            type: normalizedType,
                             cardinality: relationship.cardinality,
                             startLabel: cardinalityData.startLabel,
                             endLabel: cardinalityData.endLabel,
@@ -865,6 +958,9 @@ RESULTADO ESPERADO: Estado modificado basado en el estado actual, NO un diagrama
                     });
                 }
             }
+
+            // Agregar nodos de clases de asociación creadas automáticamente
+            resultNodes.push(...additionalNodes);
 
 
 
