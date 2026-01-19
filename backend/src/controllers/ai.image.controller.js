@@ -125,6 +125,89 @@ class AIImageController {
             // Validate and normalize diagram structure
             AIController.validateDiagramStructure(diagram);
 
+            // ✅ NUEVA LÓGICA: Detectar y crear clases de asociación para relaciones muchos-a-muchos
+            try {
+                const manyToManyRelationships = diagram.relationships.filter(rel => {
+                    const card = String(rel.cardinality || '').toLowerCase();
+                    return card.includes('*') && card.includes(':') && 
+                           card.split(':').every(part => part.includes('*') || part.includes('0'));
+                });
+
+                if (manyToManyRelationships.length > 0) {
+                    for (const m2mRel of manyToManyRelationships) {
+                        // Encontrar las clases relacionadas
+                        const sourceClass = diagram.elements.find(el => el.id === m2mRel.sourceId);
+                        const targetClass = diagram.elements.find(el => el.id === m2mRel.targetId);
+
+                        if (!sourceClass || !targetClass) continue;
+
+                        // Verificar si ya existe una clase de asociación para esta relación
+                        const hasAssocClass = diagram.elements.some(el => 
+                            el.data?.isAssociationClass && 
+                            el.data?.associatedEdgeId === m2mRel.id
+                        );
+
+                        if (!hasAssocClass) {
+                            // Generar nombre descriptivo para la clase de asociación
+                            const assocClassName = `${sourceClass.name}${targetClass.name}`;
+                            const assocClassId = `assoc_${m2mRel.id}`;
+                            
+                            // Crear clase de asociación
+                            const assocClass = {
+                                id: assocClassId,
+                                type: 'classNode',
+                                name: assocClassName,
+                                attributes: [
+                                    'id: string',
+                                    'fechaCreacion: Date',
+                                    'estado: string'
+                                ],
+                                methods: [
+                                    'crear(): void',
+                                    'actualizar(): void',
+                                    'obtener(): Object'
+                                ],
+                                position: {
+                                    x: (sourceClass.position.x + targetClass.position.x) / 2,
+                                    y: (sourceClass.position.y + targetClass.position.y) / 2 + 150
+                                },
+                                data: {
+                                    isAssociationClass: true,
+                                    associatedEdgeId: m2mRel.id
+                                }
+                            };
+
+                            // Agregar clase de asociación
+                            diagram.elements.push(assocClass);
+
+                            // Crear relaciones uno-a-muchos desde las clases originales a la clase de asociación
+                            const rel1 = {
+                                id: `rel_${m2mRel.sourceId}_${assocClassId}`,
+                                type: 'Association',
+                                sourceId: m2mRel.sourceId,
+                                targetId: assocClassId,
+                                cardinality: '1:0..*'
+                            };
+
+                            const rel2 = {
+                                id: `rel_${m2mRel.targetId}_${assocClassId}`,
+                                type: 'Association',
+                                sourceId: m2mRel.targetId,
+                                targetId: assocClassId,
+                                cardinality: '1:0..*'
+                            };
+
+                            diagram.relationships.push(rel1, rel2);
+
+                            console.log(`✅ Clase de asociación creada: ${assocClassName} para relación ${sourceClass.name}↔${targetClass.name}`);
+                        }
+                    }
+                }
+            } catch (assocErr) {
+                console.warn('Error creando clases de asociación:', assocErr.message);
+                // Continuar sin detener el flujo
+            }
+
             // If the model produced classes but no relationships, attempt a focused
             // extraction step to recover relationships from the original text
             // (or from the list of detected class names). This is a localized

@@ -29,6 +29,125 @@ import AiBubble from '../components/AiBubble';
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver';
 
+// ============================================================
+// SISTEMA DE HANDLES GEOMÉTRICOS PARA CONEXIONES UML
+// ============================================================
+
+// Handles agrupados por lado del nodo
+const HANDLE_GROUPS = {
+  right: ['right-top', 'right-center', 'right-bottom'],
+  left: ['left-top', 'left-center', 'left-bottom'],
+  top: ['top-center'],
+  bottom: ['bottom-center']
+};
+
+// Mapa de lados opuestos
+const OPPOSITE_SIDE = {
+  right: 'left',
+  left: 'right',
+  top: 'bottom',
+  bottom: 'top'
+};
+
+// Dimensiones aproximadas de un ClassNode (usadas para cálculo geométrico)
+const NODE_DEFAULT_WIDTH = 170;
+const NODE_DEFAULT_HEIGHT = 180;
+
+/**
+ * Calcula el lado del sourceNode más cercano al targetNode basándose en geometría.
+ * @param {Object} sourceNode - Nodo origen con position {x, y}
+ * @param {Object} targetNode - Nodo destino con position {x, y}
+ * @returns {string} - 'right' | 'left' | 'top' | 'bottom'
+ */
+const getClosestSide = (sourceNode, targetNode) => {
+  if (!sourceNode?.position || !targetNode?.position) {
+    return 'right'; // fallback seguro
+  }
+
+  // Calcular centros de los nodos
+  const sourceWidth = sourceNode.width || NODE_DEFAULT_WIDTH;
+  const sourceHeight = sourceNode.height || NODE_DEFAULT_HEIGHT;
+  const targetWidth = targetNode.width || NODE_DEFAULT_WIDTH;
+  const targetHeight = targetNode.height || NODE_DEFAULT_HEIGHT;
+
+  const sourceCenterX = sourceNode.position.x + sourceWidth / 2;
+  const sourceCenterY = sourceNode.position.y + sourceHeight / 2;
+  const targetCenterX = targetNode.position.x + targetWidth / 2;
+  const targetCenterY = targetNode.position.y + targetHeight / 2;
+
+  // Vector del source al target
+  const dx = targetCenterX - sourceCenterX;
+  const dy = targetCenterY - sourceCenterY;
+
+  // Determinar si la diferencia es más horizontal o vertical
+  const absDx = Math.abs(dx);
+  const absDy = Math.abs(dy);
+
+  if (absDx > absDy) {
+    // Conexión predominantemente horizontal
+    return dx > 0 ? 'right' : 'left';
+  } else {
+    // Conexión predominantemente vertical
+    return dy > 0 ? 'bottom' : 'top';
+  }
+};
+
+/**
+ * Obtiene el siguiente handle disponible dentro de un grupo/lado específico.
+ * Distribuye las conexiones balanceadamente entre los handles del lado.
+ * @param {string} nodeId - ID del nodo
+ * @param {string} side - Lado del nodo ('right', 'left', 'top', 'bottom')
+ * @param {Array} edges - Lista actual de edges
+ * @param {boolean} isSource - Si el nodo es source (true) o target (false)
+ * @returns {string} - ID del handle a usar
+ */
+const getNextHandleFromGroup = (nodeId, side, edges, isSource = true) => {
+  const handles = HANDLE_GROUPS[side] || HANDLE_GROUPS.right;
+  
+  // Contar cuántas conexiones ya existen en cada handle de este lado
+  const handleCounts = {};
+  handles.forEach(h => { handleCounts[h] = 0; });
+  
+  edges.forEach(edge => {
+    if (isSource && edge.source === nodeId && handles.includes(edge.sourceHandle)) {
+      handleCounts[edge.sourceHandle]++;
+    }
+    if (!isSource && edge.target === nodeId && handles.includes(edge.targetHandle)) {
+      handleCounts[edge.targetHandle]++;
+    }
+  });
+  
+  // Encontrar el handle con menos conexiones (distribución balanceada)
+  let minCount = Infinity;
+  let selectedHandle = handles[0];
+  
+  for (const handle of handles) {
+    if (handleCounts[handle] < minCount) {
+      minCount = handleCounts[handle];
+      selectedHandle = handle;
+    }
+  }
+  
+  return selectedHandle;
+};
+
+/**
+ * Calcula los handles óptimos para una conexión entre dos nodos.
+ * Usa geometría para determinar el lado más cercano y distribuye balanceadamente.
+ * @param {Object} sourceNode - Nodo origen
+ * @param {Object} targetNode - Nodo destino  
+ * @param {Array} edges - Lista actual de edges
+ * @returns {{sourceHandle: string, targetHandle: string}}
+ */
+const getOptimalHandles = (sourceNode, targetNode, edges) => {
+  const sourceSide = getClosestSide(sourceNode, targetNode);
+  const targetSide = OPPOSITE_SIDE[sourceSide];
+  
+  const sourceHandle = getNextHandleFromGroup(sourceNode.id, sourceSide, edges, true);
+  const targetHandle = getNextHandleFromGroup(targetNode.id, targetSide, edges, false);
+  
+  return { sourceHandle, targetHandle };
+};
 
 const BoardPage = () => {
   const { id: boardId } = useParams();
@@ -177,6 +296,12 @@ const BoardPage = () => {
   const [saving, setSaving] = useState(false);
   const initialLoadRef = useRef(false);
   const unsavedTimerRef = useRef(null);
+  
+  // Ref para mantener edges siempre actualizado (evita closure stale en isValidConnection)
+  const edgesRef = useRef(edges);
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
 
   // Debounced marking of unsaved changes. Skip the initial load from server.
   useEffect(() => {
@@ -409,62 +534,6 @@ const BoardPage = () => {
         `,
         confirmButtonText: 'Reintentar'
       });
-    }
-  };
-
-  // Generar proyecto Flutter server-side with payload fallback and client fallback
-  const handleGenerateFlutterProject = async () => {
-    try {
-      if (!nodes.length) {
-        Swal.fire({ icon: 'warning', title: 'Diagrama vacío', text: 'No hay clases en el diagrama para generar el proyecto.' });
-        return;
-      }
-
-      Swal.fire({ title: 'Generando proyecto Flutter (server)...', text: 'Solicitando exportación al backend', allowOutsideClick: false, allowEscapeKey: false, showConfirmButton: false, willOpen: () => Swal.showLoading() });
-
-      const exportUrl = `${import.meta.env.VITE_API_BASE || ''}/apis/crearPagina/exportarFlutter/${boardId}`;
-      const resp = await fetch(exportUrl, { method: 'POST', credentials: 'include' });
-
-      if (!resp.ok) {
-        console.warn('Backend Flutter export by id failed, status:', resp.status);
-        try {
-          const altUrl = `${import.meta.env.VITE_API_BASE || ''}/apis/crearPagina/exportarFlutter`;
-          const altResp = await fetch(altUrl, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ elements: nodes, connections: edges }) });
-          if (altResp.ok) {
-            const altBlob = await altResp.blob();
-            const altFileName = `uml-${boardId}-flutter-from-server.zip`;
-            const { saveAs } = await import('file-saver');
-            saveAs(altBlob, altFileName);
-            Swal.close();
-            Swal.fire({ icon: 'success', title: '✅ Exportado Flutter desde servidor', html: `<p>Archivo: <strong>${altFileName}</strong></p>` });
-            return;
-          }
-          console.warn('Server export with payload also failed, status:', altResp.status);
-        } catch (altErr) {
-          console.warn('Alt server export failed:', altErr);
-        }
-
-        // Backend failed — fall back to client-side generator (not implemented for Flutter)
-        Swal.close();
-        Swal.fire({ icon: 'warning', title: 'Exportación en servidor fallida', text: 'No se pudo generar Flutter en el servidor. Por ahora intenta generar el proyecto Spring Boot o usar export por payload.' });
-        return;
-      }
-
-      const blob = await resp.blob();
-      const contentDisposition = resp.headers.get('content-disposition') || '';
-      let fileName = '';
-      const fileNameMatch = /filename=?"?([^";]+)"?/.exec(contentDisposition);
-      if (fileNameMatch) fileName = fileNameMatch[1];
-      if (!fileName) fileName = `uml-${boardId}-flutter.zip`;
-
-      const { saveAs } = await import('file-saver');
-      saveAs(blob, fileName);
-      Swal.close();
-      Swal.fire({ icon: 'success', title: '✅ ¡Proyecto Flutter descargado!', html: `<div class="text-left"><p>Archivo descargado: <strong>${fileName}</strong></p></div>`, confirmButtonText: 'Perfecto' });
-    } catch (error) {
-      console.error('handleGenerateFlutterProject error:', error);
-      Swal.close();
-      Swal.fire({ icon: 'error', title: 'Error generando proyecto Flutter', text: error.message || String(error) });
     }
   };
 
@@ -849,15 +918,36 @@ const BoardPage = () => {
       const isNoteConnection = sourceNode?.data?.isNote || targetNode?.data?.isNote;
       const isAssociationCenterConnection = sourceNode?.data?.isConnectionPoint || targetNode?.data?.isConnectionPoint;
 
+      // Determinar el tipo de relación que se va a crear
+      const newEdgeType = isNoteConnection ? 'NoteConnection' 
+        : isAssociationCenterConnection ? 'AssociationFromCenter' 
+        : 'Association';
 
+      // Determinar handles dinámicamente usando geometría si no vienen especificados
+      let resolvedSourceHandle = params.sourceHandle;
+      let resolvedTargetHandle = params.targetHandle;
+      
+      if (!resolvedSourceHandle || !resolvedTargetHandle) {
+        // Calcular el lado óptimo basado en la posición geométrica de los nodos
+        if (sourceNode && targetNode) {
+          const sourceSide = getClosestSide(sourceNode, targetNode);
+          const targetSide = OPPOSITE_SIDE[sourceSide];
+          resolvedSourceHandle = resolvedSourceHandle || getNextHandleFromGroup(params.source, sourceSide, edges, true);
+          resolvedTargetHandle = resolvedTargetHandle || getNextHandleFromGroup(params.target, targetSide, edges, false);
+        } else {
+          // Fallback si no encontramos los nodos
+          resolvedSourceHandle = resolvedSourceHandle || 'right-center';
+          resolvedTargetHandle = resolvedTargetHandle || 'left-center';
+        }
+      }
 
       // Crear edge con datos específicos según si es una nota o relación normal
       const newEdge = {
         id: `edge-${Date.now()}-${params.source}-${params.target}`,
         source: params.source,
         target: params.target,
-        sourceHandle: params.sourceHandle || 'right',
-        targetHandle: params.targetHandle || 'left',
+        sourceHandle: resolvedSourceHandle,
+        targetHandle: resolvedTargetHandle,
         type: 'umlEdge',
         animated: false,
         data: isNoteConnection ? {
@@ -894,14 +984,29 @@ const BoardPage = () => {
         console.debug(`   ⭐ EDGE CREADO DESDE/HACIA PUNTO DE ASOCIACIÓN - debería originarse visualmente del punto AC`);
       }
 
-      // Debug log: edge being created locally
-  // console.debug('BoardPage:onConnect - creating edge', { newEdge, timestamp: Date.now() });
-
       // Use functional setter to avoid stale-closure races when multiple updates
       setEdges((prevEdges) => {
-        const updatedEdges = addEdge(newEdge, prevEdges);
-  // console.debug('BoardPage:onConnect - setEdges applied', { prevCount: prevEdges.length, newCount: updatedEdges.length });
-        // Emit the updated edges to the server so other clients receive it
+        // ═══════════════════════════════════════════════════════════════════
+        // VALIDACIÓN: No permitir múltiples relaciones entre el mismo par de clases
+        // ═══════════════════════════════════════════════════════════════════
+        if (!isNoteConnection) {
+          const existingEdge = prevEdges.find(e => 
+            (e.source === newEdge.source && e.target === newEdge.target) ||
+            (e.source === newEdge.target && e.target === newEdge.source)
+          );
+          
+          if (existingEdge) {
+            console.warn(`⚠️ BLOQUEADO: Ya existe relación entre ${newEdge.source} y ${newEdge.target}`);
+            alert(`No se puede crear otra relación: ya existe una entre estas clases.`);
+            return prevEdges;
+          }
+        }
+        // ═══════════════════════════════════════════════════════════════════
+        
+        // Agregar el nuevo edge directamente (sin usar addEdge de React Flow)
+        const updatedEdges = [...prevEdges, newEdge];
+        
+        // Emit the updated edges to the server
         try {
           updateBoardData(updatedEdges, "edges");
         } catch (err) {
@@ -915,7 +1020,7 @@ const BoardPage = () => {
         handleEdgeSelection(newEdge);
       }, 100);
     },
-    [edges, nodes, setEdges, updateBoardData, handleEdgeSelection]
+    [nodes, setEdges, updateBoardData, handleEdgeSelection]
   );
 
   // Manejadores de edición...
@@ -1386,18 +1491,6 @@ const BoardPage = () => {
             Spring Boot
           </button>
 
-          {/* Botón de generación Flutter (server-side) */}
-          <button
-            onClick={() => handleGenerateFlutterProject()}
-            className="btn-secondary bg-gradient-to-r from-blue-500 to-sky-600 text-white px-3 py-2 rounded-md flex items-center gap-2"
-            title="Exportar proyecto Flutter desde servidor"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path strokeWidth="1.5" d="M12 2l3 5-3 5-3-5 3-5zM12 22l3-5-3-5-3 5 3 5z" />
-            </svg>
-            Flutter
-          </button>
-
           {/* Usuarios activos */}
           <ActiveUsers users={activeUsers} />
           {/* Debug: button to dump recent socket events and current edges */}
@@ -1449,9 +1542,27 @@ const BoardPage = () => {
           defaultEdgeOptions={defaultEdgeOptions}
           connectionMode="loose"
           isValidConnection={(connection) => {
-            // Permitir TODAS las conexiones, incluyendo conexiones recursivas (mismo nodo)
-            // Solo validar que no sea una conexión inválida (sin source o target)
-            return connection.source && connection.target;
+            // Validar que tenga source y target
+            if (!connection.source || !connection.target) return false;
+            
+            // VALIDACIÓN CRÍTICA: No permitir relaciones duplicadas entre las mismas clases
+            // Usar edgesRef.current para tener siempre el estado más actualizado
+            const currentEdges = edgesRef.current || [];
+            const existeDuplicado = currentEdges.some(edge => {
+              // Ignorar notas
+              if (edge.data?.isNote || edge.data?.noteConnection) return false;
+              
+              // Verificar en ambas direcciones
+              return (edge.source === connection.source && edge.target === connection.target) ||
+                     (edge.source === connection.target && edge.target === connection.source);
+            });
+            
+            if (existeDuplicado) {
+              console.warn(`🚫 BLOQUEADO: Ya existe una relación entre ${connection.source} y ${connection.target}`);
+              return false;
+            }
+            
+            return true;
           }}
           fitView
           className="bg-gray-50"

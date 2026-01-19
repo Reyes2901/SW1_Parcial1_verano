@@ -133,7 +133,53 @@ REGLAS CRÍTICAS:
 4) Posiciones: distribución lógica con separación ≥200px
 5) Tipos de datos: string, int, float, bool, Date
 6) Si hay dudas, usar "clarifyingQuestions" en lugar de adivinar
-7) Mantener consistencia con el estado previo del diagrama`;
+7) Mantener consistencia con el estado previo del diagrama
+
+⚠️ REGLAS UML OBLIGATORIAS (CRÍTICAS - NO NEGOCIABLES):
+
+* SI HAY 2+ CLASES → OBLIGATORIO generar MÍNIMO 1 relación (si no hay relaciones = ERROR)
+* NINGUNA CLASE puede quedar aislada sin participar en relaciones
+* TODA relación DEBE incluir cardinalidad explícita en formato "inicio:fin"
+* Clases transaccionales (Venta, Pedido, Orden, Inscripción, Préstamo) DEBEN relacionar 2+ clases
+* Si no se mencionan relaciones explícitas, DEBES INFERIRLAS del contexto del dominio
+* Cardinalidades mínimas permitidas: "1:1", "1:*", "0..1:1", "*:*", "0..*:1", "0..*:*"
+* ESTÁ PROHIBIDO devolver "relationships": [] cuando hay 2+ clases
+* SIEMPRE responde ÚNICAMENTE con JSON válido
+
+REGLA DE CLASE ASOCIACIÓN (CRÍTICA PARA RELACIONES MUCHOS-A-MUCHOS):
+
+* Si una relación tiene cardinalidad MÚLTIPLE-MÚLTIPLE:
+  - "*:*"
+  - "0..*:0..*"
+  - "1..*:0..*"
+  - "0..*:1..*"
+  - "1..*:*"
+  - "*:1..*"
+  
+  ENTONCES DEBES:
+  1. CREAR una CLASE ASOCIACIÓN adicional que represente la relación
+  2. La clase asociación debe:
+     * Tener un nombre descriptivo que represente el dominio (Ej: Inscripcion, DetalleVenta, Matricula, Participacion, Asignacion)
+     * Incluir atributo "id: string" como identificador
+     * Incluir atributos que representen propiedades del vínculo (fecha, cantidad, estado, rol, porcentaje, etc)
+     * Tener al menos un método relacionado con la lógica de la relación
+  3. Conectar la clase asociación:
+     * Con Clase1 usando relación uno-a-muchos (1:0..*)
+     * Con Clase2 usando relación uno-a-muchos (1:0..*)
+  4. MANTENER la relación original si lo requiere el contexto (no eliminar)
+
+* NUNCA dejes una relación muchos-a-muchos SIN clase asociación
+
+* La clase asociación es COMPLEMENTARIA a las clases originales
+
+EJEMPLO CORRECTO:
+Entrada: "Sistema donde Estudiante se inscribe en Curso (muchos a muchos)"
+Salida:
+- elements: [Estudiante, Curso, Inscripcion]
+- relationships: [
+    {from: Estudiante, to: Inscripcion, cardinality: "1:0..*"},
+    {from: Curso, to: Inscripcion, cardinality: "1:0..*"}
+  ]`;
 
 // JSON Schema para validar la estructura esperada del diagrama UML
 const DIAGRAM_SCHEMA = {
@@ -395,7 +441,7 @@ class AIController {
     }
 
     // Generate UML diagram using Gemini
-    static async generateUMLFromText(userInput, modelArg = null) {
+    static async generateUMLFromText(userInput, modelArg = null, retryAttempt = 0) {
         try {
             // OpenAI implementation (commented out)
             /*
@@ -447,6 +493,39 @@ class AIController {
                 }
             }
 
+            // Normalizar estructuras comunes y tolerar pequeñas variaciones
+            try {
+                // Si `elements` viene como objeto (mapa) convertir a array
+                if (diagram.elements && !Array.isArray(diagram.elements)) {
+                    diagram.elements = Object.values(diagram.elements || {});
+                }
+
+                // Compatibilidad: algunos flujos pueden devolver `connections` en vez de `relationships`
+                if (!diagram.relationships && diagram.connections) {
+                    diagram.relationships = Array.isArray(diagram.connections) ? diagram.connections : Object.values(diagram.connections || {});
+                }
+
+                // Asegurar que relationships sea array
+                if (diagram.relationships && !Array.isArray(diagram.relationships)) {
+                    diagram.relationships = Object.values(diagram.relationships || {});
+                }
+
+                // Si no hay relationships, inicializar como array vacío
+                if (!diagram.relationships) {
+                    diagram.relationships = [];
+                }
+            } catch (normErr) {
+                console.warn('Error durante normalización inicial:', normErr.message);
+                if (!diagram.relationships) diagram.relationships = [];
+            }
+
+            // ✅ VALIDACIÓN SUAVE: Si relationships está vacío con 2+ clases, reintentar UNA VEZ
+            if (diagram.elements && Array.isArray(diagram.elements) && diagram.elements.length >= 2 && 
+                diagram.relationships.length === 0 && retryAttempt < 1) {
+                console.log(`⚠️ [Intento ${retryAttempt + 1}] relationships vacío con ${diagram.elements.length} clases. Reintentando con prompt reforzado...`);
+                return AIController.generateUMLFromText(userInput, modelArg, retryAttempt + 1);
+            }
+
             // If the model only returned clarifyingQuestions (or no elements), attempt a best-effort generation:
             // some users prefer to get an initial diagram even if some details are ambiguous.
             const noElements = !diagram.elements || (Array.isArray(diagram.elements) && diagram.elements.length === 0);
@@ -483,39 +562,19 @@ class AIController {
                 }
             }
 
-            // Normalizar estructuras comunes y tolerar pequeñas variaciones
-            try {
-                // Si `elements` viene como objeto (mapa) convertir a array
-                if (diagram.elements && !Array.isArray(diagram.elements)) {
-                    diagram.elements = Object.values(diagram.elements || {});
-                }
-
-                // Compatibilidad: algunos flujos pueden devolver `connections` en vez de `relationships`
-                if (!diagram.relationships && diagram.connections) {
-                    diagram.relationships = Array.isArray(diagram.connections) ? diagram.connections : Object.values(diagram.connections || {});
-                }
-
-                // Asegurar que relationships sea array
-                if (diagram.relationships && !Array.isArray(diagram.relationships)) {
-                    diagram.relationships = Object.values(diagram.relationships || {});
-                }
-
-                // Si AI devolvió un diagrama sin elementos, crear un fallback mínimo para evitar pizarra vacía
-                if (!diagram.elements || (Array.isArray(diagram.elements) && diagram.elements.length === 0)) {
-                    console.warn('AI devolvió un diagrama sin elementos. Se aplica fallback mínimo para evitar pizarra vacía.');
-                    diagram.elements = [
-                        {
-                            id: 'demo_auto_1',
-                            type: 'class',
-                            name: 'DemoClass',
-                            attributes: [],
-                            methods: [],
-                            position: { x: 120, y: 120 }
-                        }
-                    ];
-                }
-            } catch (normErr) {
-                console.warn('Error durante normalización del diagrama AI:', normErr.message);
+            // Si AI devolvió un diagrama sin elementos, crear un fallback mínimo para evitar pizarra vacía
+            if (!diagram.elements || (Array.isArray(diagram.elements) && diagram.elements.length === 0)) {
+                console.warn('AI devolvió un diagrama sin elementos. Se aplica fallback mínimo para evitar pizarra vacía.');
+                diagram.elements = [
+                    {
+                        id: 'demo_auto_1',
+                        type: 'class',
+                        name: 'DemoClass',
+                        attributes: [],
+                        methods: [],
+                        position: { x: 120, y: 120 }
+                    }
+                ];
             }
 
                 // Validate against basic structure requirements (more lenient than strict JSON schema)
