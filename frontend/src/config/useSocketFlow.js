@@ -128,51 +128,22 @@ export const useSocketFlow = (boardId, currentUser = null, options = {}) => {
             // state missing - nothing to apply
           return;
         }
+        // ═══════════════════════════════════════════════════════════════════
+        // SYNC COMPLETO: El estado inicial del servidor es la fuente de verdad
+        // NO mezclar con estado local - esto sobrescribe todo
+        // ═══════════════════════════════════════════════════════════════════
+        console.log(`🔄 estadoInicial: Cargando estado del servidor`);
         if (state.nodes && state.edges) {
           setNodes(state.nodes);
-          setEdges(prev => {
-            try {
-              const incoming = state.edges || [];
-              const byId = new Map(incoming.map(e => [e.id, e]));
-              // Preserve any locally-created edges that server state doesn't include yet
-              prev.forEach(e => {
-                if (e?.data?._localCreated && !byId.has(e.id)) {
-                  byId.set(e.id, e);
-                }
-              });
-              // Dedupe by endpoints to avoid duplicates when server returns equivalent edge with different id
-              const merged = Array.from(byId.values());
-              const incomingIds = new Set(incoming.map(e => e.id));
-              return dedupeEdgesByEndpoints(merged, incomingIds);
-            } catch (err) {
-              console.warn('useSocketFlow: merge on estadoInicial failed, falling back to incoming edges', err);
-              return state.edges || [];
-            }
-          });
+          setEdges(state.edges);
         } else if (Array.isArray(state)) {
           // If saved only nodes array
-          // estadoInicial contains nodes array only
           setNodes(state);
+          setEdges([]);
         } else if (typeof state === 'object') {
           // fallback: object with nodes/edges
-            setNodes(state.nodes || []);
-            setEdges(prev => {
-              try {
-                const incoming = state.edges || [];
-                const byId = new Map(incoming.map(e => [e.id, e]));
-                prev.forEach(e => {
-                  if (e?.data?._localCreated && !byId.has(e.id)) {
-                    byId.set(e.id, e);
-                  }
-                });
-                const merged = Array.from(byId.values());
-                const incomingIds = new Set(incoming.map(e => e.id));
-                return dedupeEdgesByEndpoints(merged, incomingIds);
-              } catch (err) {
-                console.warn('useSocketFlow: merge on estadoInicial fallback failed', err);
-                return state.edges || [];
-              }
-            });
+          setNodes(state.nodes || []);
+          setEdges(state.edges || []);
         }
       } catch (err) {
         console.error('useSocketFlow: error handling estadoInicial', err);
@@ -258,32 +229,30 @@ export const useSocketFlow = (boardId, currentUser = null, options = {}) => {
         } catch (inner) {
           // ignore errors in self-detection
         }
-        const { tipo, elemento } = payload || {};
+        const { tipo, elemento, timestamp } = payload || {};
         if (!elemento) return;
         // If elemento is an array, treat as bulk nodes or edges update
         if (Array.isArray(elemento)) {
           // detect if array items look like nodes (have position) or edges (have source/target)
           const first = elemento[0];
-          if (!first) return;
-          if (first.position) {
+          // Si el array está vacío, también procesarlo (puede ser que se borraron todos)
+          if (elemento.length === 0 || (first && first.position)) {
             // ═══════════════════════════════════════════════════════════════════
             // SYNC COMPLETO: Reemplazar nodos con el array recibido
-            // Esto maneja tanto adiciones como eliminaciones correctamente
             // ═══════════════════════════════════════════════════════════════════
-            setNodes(elemento);
-          } else if (first.source && first.target) {
+            if (tipo === 'nodes' || (first && first.position)) {
+              setNodes(elemento);
+            }
+          }
+          if (elemento.length === 0 || (first && first.source && first.target) || tipo === 'edges') {
             // ═══════════════════════════════════════════════════════════════════
-            // SYNC COMPLETO DE EDGES: Reemplazar edges con el array recibido
-            // Esto asegura que las eliminaciones se sincronicen correctamente
+            // SYNC COMPLETO DE EDGES: El array remoto es la fuente de verdad
+            // NO preservar edges locales - si fueron borrados remotamente, deben borrarse
             // ═══════════════════════════════════════════════════════════════════
-            setEdges(prev => {
-              // Preservar edges locales que fueron creados recientemente y aún no confirmados
-              const localOnlyEdges = prev.filter(e => e._localCreated && !elemento.some(inc => inc.id === e.id));
-              
-              // Combinar: edges remotos + edges locales pendientes
-              const deduped = dedupeEdgesByEndpoints([...elemento, ...localOnlyEdges], new Set(elemento.map(e => e.id)));
-              return deduped;
-            });
+            if (tipo === 'edges' || (first && first.source && first.target)) {
+              console.log(`🔄 cambioRecibido: Sincronizando ${elemento.length} edges desde usuario remoto`);
+              setEdges(elemento);
+            }
           }
           return;
         }
@@ -335,26 +304,13 @@ export const useSocketFlow = (boardId, currentUser = null, options = {}) => {
       try {
         const payloadState = data?.data?.state;
         if (payloadState) {
-          // merge incoming full state with locally-created edges
-          setNodes(payloadState.nodes || nodes);
-          setEdges(prev => {
-            try {
-              const incoming = payloadState.edges || [];
-              const byId = new Map(incoming.map(e => [e.id, e]));
-              prev.forEach(e => {
-                if (e?.data?._localCreated && !byId.has(e.id)) {
-                  byId.set(e.id, e);
-                }
-              });
-              const merged = Array.from(byId.values());
-              const incomingIds = new Set(incoming.map(e => e.id));
-              const deduped = dedupeEdgesByEndpoints(merged, incomingIds);
-              return deduped;
-            } catch (err) {
-              console.warn('useSocketFlow: merge on diagramaActualizado failed', err);
-              return payloadState.edges || edges;
-            }
-          });
+          // ═══════════════════════════════════════════════════════════════════
+          // SYNC COMPLETO: El estado del servidor es la fuente de verdad
+          // NO preservar edges locales - si no están en el servidor, fueron borrados
+          // ═══════════════════════════════════════════════════════════════════
+          console.log(`🔄 diagramaActualizado: Sincronizando estado completo`);
+          setNodes(payloadState.nodes || []);
+          setEdges(payloadState.edges || []);
         }
       } catch (err) {
         console.error('useSocketFlow: diagramaActualizado error', err);
