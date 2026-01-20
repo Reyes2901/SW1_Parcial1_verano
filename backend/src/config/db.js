@@ -1,13 +1,24 @@
 ﻿import 'dotenv/config';
 import pkg from 'pg';
 const { Pool } = pkg;
-
+/*
 const pool = new Pool({
   user: process.env.DB_USER || 'postgres',
   host: process.env.DB_HOST || 'localhost', 
   database: process.env.DB_DATABASE || 'diagrama_dev',
   password: process.env.DB_PASSWORD || 'Medrano73697178',
   port: parseInt(process.env.DB_PORT) || 5432
+});
+
+export default pool;
+*/
+
+import pkg from 'pg';
+const { Pool } = pkg;
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // necesario en Railway
 });
 
 export default pool;
