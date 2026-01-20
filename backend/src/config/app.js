@@ -15,7 +15,7 @@ const app = express();
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(cookieParser());
-/*
+
 app.use(cors({
     origin: function (origin, callback) {
         if (!origin) return callback(null, true);
@@ -27,12 +27,8 @@ app.use(cors({
     },
     credentials: true
 }));
-*/
-app.use(cors({
-  origin: FRONTEND_URL,
-  credentials: true
-}));
-app.use("/apis", authRoutes);
+
+se("/apis", authRoutes);
 
 app.use("/apis/sala", salaRoutes);
 
